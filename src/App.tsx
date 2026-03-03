@@ -28,6 +28,7 @@ import {
   Wind,
   Droplets,
   Hammer,
+  BookOpen,
   Users,
   Eye,
   HelpCircle,
@@ -61,7 +62,9 @@ import {
   GraduationCap,
   Wand2,
   Crown,
-  Glasses
+  Glasses,
+  Bookmark,
+  BookmarkCheck
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -632,7 +635,7 @@ export default function App() {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showSoulProfile, setShowSoulProfile] = useState(false);
-  const [profileTab, setProfileTab] = useState<'level' | 'stats' | 'avatar'>('level');
+  const [profileTab, setProfileTab] = useState<'level' | 'stats' | 'avatar' | 'aha' | 'report'>('level');
   
   const [soulData, setSoulData] = useState(() => {
     const defaults = {
@@ -653,7 +656,9 @@ export default function App() {
       unlockedItems: ['apprentice_robe'],
       equippedItems: { head: null, face: null, body: 'apprentice_robe', hand: null },
       itemColors: { head: '', face: '', body: '', hand: '' } as Record<string, string>,
-      oracleFeedbackHistory: [] as { oracleTitle: string; feedback: string; date: string }[]
+      oracleFeedbackHistory: [] as { oracleTitle: string; feedback: string; date: string }[],
+      ahaMoments: [] as { id: string; text: string; style: string; date: string }[],
+      latestWeeklyReport: null as { date: string; content: string } | null
     };
     try {
       const saved = localStorage.getItem('soulData');
@@ -674,6 +679,52 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('soulData', JSON.stringify(soulData));
   }, [soulData]);
+
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  const generateWeeklyReport = async () => {
+    setIsGeneratingReport(true);
+    try {
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      const recentHistory = soulData.ritualHistory.filter(
+        item => new Date(item.date) >= oneWeekAgo
+      );
+
+      if (recentHistory.length === 0) {
+        alert("過去一週沒有足夠的轉念紀錄來生成週報。");
+        setIsGeneratingReport(false);
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/weekly-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          history: recentHistory,
+          ahaMoments: soulData.ahaMoments
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to generate report');
+      
+      const data = await response.json();
+      
+      setSoulData(prev => ({
+        ...prev,
+        latestWeeklyReport: {
+          date: new Date().toISOString(),
+          content: data.text
+        }
+      }));
+    } catch (error) {
+      console.error("Error generating weekly report:", error);
+      alert("生成週報失敗，請稍後再試。");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
 
   // Persistence Effects
   useEffect(() => { localStorage.setItem('alchemy_draft', input); }, [input]);
@@ -1060,7 +1111,10 @@ export default function App() {
       const response = await fetch('/api/oracle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lastMessage })
+        body: JSON.stringify({ 
+          lastMessage,
+          ahaMoments: soulData.ahaMoments
+        })
       });
 
       if (!response.ok) throw new Error('Oracle failed');
@@ -1072,6 +1126,30 @@ export default function App() {
     } finally {
       setOracleLoading(false);
     }
+  };
+
+  const handleSaveAhaMoment = (text: string, styleName: string) => {
+    setSoulData(prev => {
+      const isSaved = prev.ahaMoments?.some(m => m.text === text);
+      if (isSaved) {
+        return {
+          ...prev,
+          ahaMoments: prev.ahaMoments.filter(m => m.text !== text)
+        };
+      } else {
+        return {
+          ...prev,
+          ahaMoments: [
+            { id: Date.now().toString(), text, style: styleName, date: new Date().toISOString() },
+            ...(prev.ahaMoments || [])
+          ]
+        };
+      }
+    });
+  };
+
+  const isAhaMomentSaved = (text: string) => {
+    return soulData.ahaMoments?.some(m => m.text === text) || false;
   };
 
   const handlePurify = async () => {
@@ -1098,7 +1176,8 @@ export default function App() {
         body: JSON.stringify({
           input,
           style: selectedStyle,
-          history: messages
+          history: messages,
+          ahaMoments: soulData.ahaMoments
         })
       });
 
@@ -1358,6 +1437,18 @@ export default function App() {
                               <Markdown>{msg.text}</Markdown>
                             </div>
                             <div className="mt-6 pt-6 border-t border-white/5 flex justify-end items-center gap-4">
+                              <button
+                                onClick={() => handleSaveAhaMoment(msg.text, selectedStyle.name)}
+                                className={cn(
+                                  "p-2 rounded-full glass transition-all",
+                                  isAhaMomentSaved(msg.text) 
+                                    ? "bg-amber-500/20 text-amber-500 hover:bg-amber-500/30" 
+                                    : "hover:bg-white/10 text-white/60 hover:text-white"
+                                )}
+                                title={isAhaMomentSaved(msg.text) ? "取消收藏阿哈時刻" : "收藏阿哈時刻"}
+                              >
+                                {isAhaMomentSaved(msg.text) ? <BookmarkCheck className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
+                              </button>
                               <div className="relative">
                                 <button 
                                   onClick={() => setShowShareMenu(showShareMenu === idx ? null : idx)}
@@ -1680,31 +1771,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Deployment Helper */}
-        {!process.env.GEMINI_API_KEY && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/90 backdrop-blur-xl">
-            <div className="glass max-w-md w-full p-8 rounded-[2rem] border-red-500/30 text-center shadow-2xl">
-              <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-                <HelpCircle className="w-8 h-8 text-red-400" />
-              </div>
-              <h2 className="text-2xl font-serif text-white mb-4">金鑰能量不足</h2>
-              <p className="text-white/60 mb-8 leading-relaxed text-sm">
-                檢測到尚未設定 <code className="bg-white/10 px-2 py-1 rounded text-red-300">GEMINI_API_KEY</code>。<br/>
-                這就是導致「能量不穩定」的原因。
-              </p>
-              <div className="space-y-4 text-left bg-white/5 p-6 rounded-2xl mb-8">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">解決步驟：</p>
-                <ol className="text-sm text-white/80 space-y-3 list-decimal list-inside">
-                  <li>前往 Netlify 專案設定</li>
-                  <li>找到 Environment variables</li>
-                  <li>新增 <code className="text-amber-400">GEMINI_API_KEY</code></li>
-                  <li>貼入你的 API 金鑰並重新部署</li>
-                </ol>
-              </div>
-              <p className="text-[10px] text-white/30 uppercase tracking-widest text-center">設定完成後，此提示將自動消失</p>
-            </div>
-          </div>
-        )}
+        {/* Deployment Helper - Removed because API key is handled by backend */}
 
         {/* Solidarity Wall Overlay */}
         <AnimatePresence>
@@ -1995,6 +2062,27 @@ export default function App() {
                         <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
                       )}
                     </button>
+                    <button 
+                      onClick={() => setProfileTab('aha')}
+                      className={cn(
+                        "text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center gap-2",
+                        profileTab === 'aha' ? "text-white" : "text-white/20 hover:text-white/40"
+                      )}
+                    >
+                      阿哈時刻
+                      {soulData.ahaMoments?.length > 0 && (
+                        <span className="bg-amber-500/20 text-amber-500 px-1.5 py-0.5 rounded text-[8px]">{soulData.ahaMoments.length}</span>
+                      )}
+                    </button>
+                    <button 
+                      onClick={() => setProfileTab('report')}
+                      className={cn(
+                        "text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center gap-2",
+                        profileTab === 'report' ? "text-white" : "text-white/20 hover:text-white/40"
+                      )}
+                    >
+                      心靈週報
+                    </button>
                   </div>
 
                   {profileTab === 'level' ? (
@@ -2189,6 +2277,90 @@ export default function App() {
                           </div>
                         </div>
                       </div>
+                    </div>
+                  ) : profileTab === 'aha' ? (
+                    <div className="mb-10">
+                      <div className="flex items-center gap-2 mb-6">
+                        <Star className="w-5 h-5 text-amber-500" />
+                        <h3 className="text-xl font-serif text-white">阿哈時刻收藏</h3>
+                      </div>
+                      
+                      {!soulData.ahaMoments || soulData.ahaMoments.length === 0 ? (
+                        <div className="glass rounded-3xl p-12 text-center">
+                          <Star className="w-12 h-12 text-white/10 mx-auto mb-4" />
+                          <p className="text-white/40 text-sm">尚未收藏任何金句。<br/>在煉金過程中，點擊回覆右上角的書籤圖示即可收藏觸動你的話語。</p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-4">
+                          {soulData.ahaMoments.map(moment => (
+                            <div key={moment.id} className="glass p-6 rounded-2xl relative group">
+                              <button 
+                                onClick={() => handleSaveAhaMoment(moment.text, moment.style)}
+                                className="absolute top-4 right-4 p-2 text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/5 rounded-full"
+                                title="取消收藏"
+                              >
+                                <X size={16} />
+                              </button>
+                              <div className="flex items-center gap-2 mb-3">
+                                <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-white/40 uppercase tracking-wider border border-white/10">
+                                  {moment.style}
+                                </span>
+                                <span className="text-[10px] text-white/20">
+                                  {new Date(moment.date).toLocaleDateString()}
+                                </span>
+                              </div>
+                              <p className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap">
+                                {moment.text}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : profileTab === 'report' ? (
+                    <div className="mb-10">
+                      <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-2">
+                          <BookOpen className="w-5 h-5 text-indigo-400" />
+                          <h3 className="text-xl font-serif text-white">心靈週報</h3>
+                        </div>
+                        <button
+                          onClick={generateWeeklyReport}
+                          disabled={isGeneratingReport}
+                          className="px-4 py-2 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-bold uppercase tracking-wider hover:bg-indigo-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                        >
+                          {isGeneratingReport ? (
+                            <>
+                              <div className="w-3 h-3 border-2 border-indigo-300/30 border-t-indigo-300 rounded-full animate-spin" />
+                              生成中...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3 h-3" />
+                              生成本週報告
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {soulData.latestWeeklyReport ? (
+                        <div className="glass rounded-3xl p-8 relative overflow-hidden">
+                          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
+                          <div className="relative z-10">
+                            <div className="text-[10px] text-white/40 uppercase tracking-widest mb-6">
+                              報告生成時間：{new Date(soulData.latestWeeklyReport.date).toLocaleString()}
+                            </div>
+                            <div className="prose prose-invert prose-sm max-w-none prose-headings:font-serif prose-headings:font-normal prose-h3:text-indigo-300 prose-h3:text-lg prose-p:text-white/80 prose-p:leading-relaxed prose-li:text-white/80">
+                              <Markdown>{soulData.latestWeeklyReport.content}</Markdown>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="glass rounded-3xl p-12 text-center">
+                          <BookOpen className="w-12 h-12 text-white/10 mx-auto mb-4" />
+                          <p className="text-white/40 text-sm mb-6">尚未生成任何週報。<br/>點擊上方按鈕，讓導師為你總結過去一週的煉金旅程。</p>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
